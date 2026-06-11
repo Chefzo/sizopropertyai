@@ -56,32 +56,73 @@ app.post('/test/message', async (req, res) => {
 });
 
 // ---------------------------------------------------------------------------
-// Twilio webhook: Sienna's SMS replies (escalation approvals)
+// Twilio webhook: ALL inbound SMS to the SiZo number
+// Routes by sender: Sienna -> escalation approvals; known tenant -> resident agent
+// TENANT_MAP in .env: {"+15025551234":{"unit":"payne-1304","name":"Tenant Name"}}
 // ---------------------------------------------------------------------------
+const TENANT_MAP = JSON.parse(process.env.TENANT_MAP || '{}');
+
 app.post('/sms', async (req, res) => {
   const from = req.body.From;
   const text = (req.body.Body || '').trim();
-  const job = getPending(from);
 
-  if (!job) {
-    res.type('text/xml').send('<Response><Message>No pending escalation.</Message></Response>');
+  // --- Sienna: escalation approval flow ---
+  if (from === process.env.SIENNA_PHONE) {
+    const job = getPending(from);
+    if (!job) {
+      res.type('text/xml').send('<Response><Message>No pending escalation.</Message></Response>');
+      return;
+    }
+    const replyBody = text === '1' ? job.suggestedReply : text;
+    if (job.channel === 'sms') {
+      await sendSms(job.replyTo, replyBody);
+    } else {
+      await sendToGuest({ conversationId: job.conversationId, body: replyBody });
+    }
+    await logMessage({
+      unitSlug: job.unitSlug, guestName: job.guestName, direction: 'outbound',
+      body: replyBody, aiDrafted: text === '1', autoSent: false, escalated: true,
+    });
+    clearPending(from);
+    res.type('text/xml').send('<Response><Message>Sent.</Message></Response>');
     return;
   }
 
-  const replyBody = text === '1' ? job.suggestedReply : text;
-  await sendToGuest({ conversationId: job.conversationId, body: replyBody });
-  await logMessage({
-    unitSlug: job.unitSlug, guestName: job.guestName, direction: 'outbound',
-    body: replyBody, aiDrafted: text === '1', autoSent: false, escalated: true,
-  });
-  clearPending(from);
-  res.type('text/xml').send('<Response><Message>Sent to guest.</Message></Response>');
+  // --- Known tenant: resident line ---
+  const tenant = TENANT_MAP[from];
+  if (tenant) {
+    res.type('text/xml').send('<Response></Response>'); // ack; reply sent async via API
+    await handleInbound({
+      unitSlug: tenant.unit,
+      guestName: tenant.name,
+      messageBody: text,
+      conversationId: from, // for SMS, the "conversation" is the phone number
+      mode: 'resident',
+      channel: 'sms',
+      replyTo: from,
+    });
+    return;
+  }
+
+  // --- Unknown number ---
+  res.type('text/xml').send('<Response><Message>This is the SiZo Property Management line. We don\'t have this number on file — if you\'re a resident, reply with your name and unit address and we\'ll get you set up.</Message></Response>');
 });
+
+async function sendSms(to, body) {
+  if (process.env.MOCK === 'true') {
+    console.log(`--- SMS TO ${to} ---\n${body}\n--------------------`);
+    return;
+  }
+  const twilio = require('twilio')(process.env.TWILIO_ACCOUNT_SID, process.env.TWILIO_AUTH_TOKEN);
+  await twilio.messages.create({ from: process.env.TWILIO_PHONE, to, body });
+}
 
 // ---------------------------------------------------------------------------
 // Core loop
 // ---------------------------------------------------------------------------
-async function handleInbound({ unitSlug, guestName, messageBody, conversationId }) {
+async function handleInbound({ unitSlug, guestName, messageBody, conversationId, mode = 'guest', channel = 'hospitable', replyTo = null }) {
+  const sendReply = (body) => channel === 'sms' ? sendSms(replyTo, body) : sendToGuest({ conversationId, body });
+
   // 1. Log inbound
   const inbound = await logMessage({
     unitSlug, guestName, direction: 'inbound', body: messageBody,
@@ -92,7 +133,7 @@ async function handleInbound({ unitSlug, guestName, messageBody, conversationId 
   const { route, trigger } = classify(messageBody);
 
   // 3. Draft a reply either way (escalations include a suggested reply for Sienna)
-  const draft = await draftReply({ unitSlug, guestName, messageBody });
+  const draft = await draftReply({ unitSlug, guestName, messageBody, mode });
 
   // 4. Route
   const mustEscalate = route === 'ESCALATE' || draft.confidence < CONFIDENCE_FLOOR;
@@ -105,18 +146,20 @@ async function handleInbound({ unitSlug, guestName, messageBody, conversationId 
     await notifySienna({
       escalationId: esc.id, unitSlug, guestName, trigger: reason,
       guestMessage: messageBody, suggestedReply: draft.reply, conversationId,
+      channel, replyTo,
     });
-    // Safety: acknowledge safety/maintenance so the guest isn't left hanging
-    if (trigger === 'safety' || trigger === 'maintenance') {
-      const ack = "Thanks for letting us know — we're on it and someone will follow up with you shortly.";
-      await sendToGuest({ conversationId, body: ack });
+    // Safety: acknowledge urgent categories so the person isn't left hanging
+    const ackTriggers = ['safety', 'maintenance', 'lockout', 'pest'];
+    if (ackTriggers.includes(trigger)) {
+      const ack = "Thanks for letting us know — we've got it logged and someone will follow up with you shortly.";
+      await sendReply(ack);
       await logMessage({ unitSlug, guestName, direction: 'outbound', body: ack, aiDrafted: false, autoSent: true, escalated: true, trigger });
     }
     return { routed: 'ESCALATED', reason, suggestedReply: draft.reply };
   }
 
   // 5. Auto-send
-  await sendToGuest({ conversationId, body: draft.reply });
+  await sendReply(draft.reply);
   await logMessage({
     unitSlug, guestName, direction: 'outbound', body: draft.reply,
     aiDrafted: true, autoSent: true, confidence: draft.confidence, escalated: false,
