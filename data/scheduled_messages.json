@@ -1,0 +1,63 @@
+[
+  {
+    "id": "scheduled_messages-1781215317458-y0m9",
+    "unit": "pilot-unit",
+    "guest_name": "Dana",
+    "conversation_id": "conv-99",
+    "step": "confirmation",
+    "body": "Hey Dana — you're all set for Jun 15. We'll send check-in details a couple days before arrival. Questions anytime, just message here.",
+    "send_at": "2026-06-11T22:01:57.413Z",
+    "status": "sent",
+    "sent_at": "2026-06-11T22:02:19.175Z"
+  },
+  {
+    "id": "scheduled_messages-1781215317459-cxrc",
+    "unit": "pilot-unit",
+    "guest_name": "Dana",
+    "conversation_id": "conv-99",
+    "step": "checkin_info",
+    "body": "Dana — quick heads up, check-in is Monday at 4 PM. Full access details (door code, parking, wifi) land here the morning of arrival.",
+    "send_at": "2026-06-13T16:00:00.000Z",
+    "status": "pending"
+  },
+  {
+    "id": "scheduled_messages-1781215317459-0z8t",
+    "unit": "pilot-unit",
+    "guest_name": "Dana",
+    "conversation_id": "conv-99",
+    "step": "day_of",
+    "body": "Today's the day. Check-in opens at 4 PM — your door code and everything you need: see your check-in guide in the listing. Safe travels.",
+    "send_at": "2026-06-15T09:00:00.000Z",
+    "status": "pending"
+  },
+  {
+    "id": "scheduled_messages-1781215317459-yrmj",
+    "unit": "pilot-unit",
+    "guest_name": "Dana",
+    "conversation_id": "conv-99",
+    "step": "mid_stay",
+    "body": "Hope you're settled in, Dana. Anything not right with the place, tell us now and we'll fix it — that's what we're here for.",
+    "send_at": "2026-06-16T16:00:00.000Z",
+    "status": "pending"
+  },
+  {
+    "id": "scheduled_messages-1781215317460-rupw",
+    "unit": "pilot-unit",
+    "guest_name": "Dana",
+    "conversation_id": "conv-99",
+    "step": "checkout_reminder",
+    "body": "Dana — checkout tomorrow at 11 AM. Nothing fancy required: trash in the bin, dishes in the sink, door locked behind you.",
+    "send_at": "2026-06-17T20:00:00.000Z",
+    "status": "pending"
+  },
+  {
+    "id": "scheduled_messages-1781215317460-1717",
+    "unit": "pilot-unit",
+    "guest_name": "Dana",
+    "conversation_id": "conv-99",
+    "step": "review_ask",
+    "body": "Thanks for staying with us, Dana. If everything was right, a review genuinely helps a small local operation like ours. Hope to host you again.",
+    "send_at": "2026-06-18T17:00:00.000Z",
+    "status": "pending"
+  }
+]

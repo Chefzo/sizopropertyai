@@ -9,6 +9,12 @@ const { draftReply, CONFIDENCE_FLOOR } = require('./lib/agent');
 const { logMessage, logEscalation } = require('./lib/airtable');
 const { notifySienna, getPending, clearPending } = require('./lib/escalate');
 const { sendToGuest } = require('./lib/hospitable');
+const { scheduleSequence, startScheduler } = require('./lib/sequences');
+const { insert, list, update } = require('./lib/store');
+const { generateReport } = require('./lib/report');
+const { BOARD, DASHBOARD } = require('./lib/ui');
+const fs = require('fs');
+const path = require('path');
 
 const app = express();
 app.use(express.json());
@@ -26,8 +32,28 @@ app.post('/webhook/hospitable', async (req, res) => {
   res.sendStatus(200); // ack immediately; process async
 
   try {
+    const event = req.body?.action || req.body?.event || '';
     const payload = req.body?.data || req.body;
-    // Hospitable message.created shape (normalize defensively)
+
+    // --- New booking: schedule the pre-arrival sequence + create the turnover ---
+    if (/reservation/i.test(event) && /(created|accepted)/i.test(event)) {
+      const listingId = String(payload?.listing_id || payload?.property?.id || '');
+      const unitSlug = UNIT_MAP[listingId] || 'pilot-unit';
+      const guestName = payload?.guest?.first_name || 'Guest';
+      const conversationId = payload?.conversation_id || payload?.conversation?.id;
+      const checkIn = payload?.check_in || payload?.arrival_date;
+      const checkOut = payload?.check_out || payload?.departure_date;
+      if (checkIn && checkOut) {
+        await scheduleSequence({ unitSlug, guestName, conversationId, checkIn, checkOut });
+        await insert('turnovers', {
+          unit: unitSlug, checkout_date: checkOut, status: 'open',
+          claimed_by: null, notes: `After ${guestName}'s stay`,
+        });
+      }
+      return;
+    }
+
+    // --- Inbound guest message ---
     const messageBody = payload?.body || payload?.message?.body;
     const guestName = payload?.guest?.first_name || payload?.sender?.first_name || 'Guest';
     const conversationId = payload?.conversation_id || payload?.conversation?.id;
@@ -41,6 +67,58 @@ app.post('/webhook/hospitable', async (req, res) => {
   } catch (err) {
     console.error('Webhook processing error:', err.message);
   }
+});
+
+// ---------------------------------------------------------------------------
+// Turnover board + API (cleaners use this on their phones, no login)
+// ---------------------------------------------------------------------------
+app.get('/board', (_req, res) => res.type('html').send(BOARD));
+
+app.get('/api/turnovers', async (_req, res) => {
+  const rows = await list('turnovers');
+  rows.sort((a, b) => new Date(a.checkout_date) - new Date(b.checkout_date));
+  res.json(rows.filter((t) => t.status !== 'completed' || new Date(t.checkout_date) > new Date(Date.now() - 3 * 86400000)));
+});
+
+app.post('/api/turnovers/:id/claim', async (req, res) => {
+  const row = await update('turnovers', req.params.id, { claimed_by: req.body.cleaner || 'Cleaner', status: 'claimed', claimed_at: new Date().toISOString() });
+  res.json(row);
+});
+
+app.post('/api/turnovers/:id/complete', async (req, res) => {
+  const row = await update('turnovers', req.params.id, { status: 'completed', completed_at: new Date().toISOString() });
+  res.json(row);
+});
+
+// ---------------------------------------------------------------------------
+// Admin dashboard: live activity feed (Enzo + Sienna)
+// ---------------------------------------------------------------------------
+app.get('/dashboard', (_req, res) => res.type('html').send(DASHBOARD));
+
+app.get('/api/activity', async (_req, res) => {
+  if (process.env.MOCK === 'true') {
+    const p = path.join(__dirname, 'test', 'local-log.jsonl');
+    if (!fs.existsSync(p)) return res.json([]);
+    const rows = fs.readFileSync(p, 'utf8').trim().split('\n').map((l) => JSON.parse(l))
+      .filter((r) => r.table === 'messages');
+    return res.json(rows.reverse().slice(0, 50));
+  }
+  const Airtable = require('airtable');
+  const base = new Airtable({ apiKey: process.env.AIRTABLE_API_KEY }).base(process.env.AIRTABLE_BASE_ID);
+  const records = await base('messages').select({ maxRecords: 50, sort: [{ field: 'timestamp', direction: 'desc' }] }).all();
+  res.json(records.map((r) => r.fields));
+});
+
+// ---------------------------------------------------------------------------
+// Owner report: /report/payne-1304 (current month) or /report/payne-1304/2026/5
+// ---------------------------------------------------------------------------
+app.get('/report/:unit', async (req, res) => {
+  const now = new Date();
+  res.type('html').send(await generateReport(req.params.unit, now.getFullYear(), now.getMonth()));
+});
+
+app.get('/report/:unit/:year/:month', async (req, res) => {
+  res.type('html').send(await generateReport(req.params.unit, parseInt(req.params.year), parseInt(req.params.month)));
 });
 
 // ---------------------------------------------------------------------------
@@ -168,4 +246,7 @@ async function handleInbound({ unitSlug, guestName, messageBody, conversationId,
 }
 
 const PORT = process.env.PORT || 3000;
-app.listen(PORT, () => console.log(`sizo-agent running on :${PORT} | mock=${process.env.MOCK === 'true'}`));
+app.listen(PORT, () => {
+  console.log(`sizo-agent running on :${PORT} | mock=${process.env.MOCK === 'true'}`);
+  startScheduler();
+});
